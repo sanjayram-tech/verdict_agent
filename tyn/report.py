@@ -53,7 +53,21 @@ def render_markdown(run: RunResult, index: dict[str, dict[str, Any]], project: s
         lines += [f"### {r.id} — {md_escape(r.summary)}: {r.decision}", "",
                   f"- **Jira:** {r.key}", f"- **Acceptance criterion:** {md_escape(r.criterion)}", "",
                   "**Explanation.** " + md_escape(r.rationale), ""]
-        if r.evidence_refs:
+        if r.conflict_resolution:
+            lines += ["**Conflict resolution.** " + md_escape(r.conflict_resolution), ""]
+        if r.evidence:
+            lines += ["**Evidence assessment** (labels by the agent; *counted* computed by code: applicable, "
+                      "non-superseded verified result/approval by a policy-authorised role):", "",
+                      "| Ref | Kind | Outcome | Applicable | Counted | Superseded by |", "|---|---|---|---|---|---|"]
+            for e in r.evidence:
+                flags = (" ⚠ flagged" if e.get("suspicious") else "") + (" ⚠ future-dated" if e.get("future_dated") else "")
+                lines.append(f"| `{e['ref']}` | {e['kind']} | {e['outcome']} | {'yes' if e['applicable'] else 'no'} "
+                             f"| {'**yes**' if e['counted'] else 'no'}{flags} | {('`' + e['superseded_by'] + '`') if e.get('superseded_by') else ''} |")
+            lines += ["", "**Evidence cited:**", ""]
+            order = sorted(r.evidence, key=lambda e: (not e["counted"], e["recorded_at"] or ""))
+            lines += [f"- {_cite(e['ref'], index, base_url)}" for e in order]
+            lines.append("")
+        elif r.evidence_refs:
             lines += ["**Evidence cited:**", ""]
             lines += [f"- {_cite(ref, index, base_url)}" for ref in r.evidence_refs]
             lines.append("")
@@ -105,6 +119,7 @@ def render_markdown(run: RunResult, index: dict[str, dict[str, Any]], project: s
 def decisions_json(run: RunResult) -> dict[str, Any]:
     return {"status": run.status, "verdict": run.verdict, "target": run.target,
             "requirements": [{"id": r.id, "key": r.key, "decision": r.decision, "evidence_refs": r.evidence_refs,
+                              "evidence": r.evidence, "conflict_resolution": r.conflict_resolution,
                               "outstanding": r.outstanding, "rationale": r.rationale,
                               "agent_failure": r.agent_failure, "guardrail_rejections": r.guardrail_rejections}
                              for r in run.requirements]}

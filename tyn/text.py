@@ -1,12 +1,19 @@
-"""Deterministic text helpers: comment headers, filler detection, scope extraction,
-injection detection and safe output escaping. No network, no model."""
+"""Deterministic, dataset-agnostic text helpers: comment headers, repeat collapsing,
+target-value matching, injection signals and safe output escaping.
+
+Nothing here encodes this dataset's wording: scope checks look for the *target values*
+from the manifest (plus policy aliases), not for a particular sentence format.
+"""
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
+from .policy import Policy
+
 # ---------------------------------------------------------------- comment header
+# Importer contract: each imported comment starts with the recorded scenario metadata.
 HEADER_RE = re.compile(r"^Recorded event (?P<ts>\S+) \| actor (?P<actor>.+?) \| role (?P<role>.+?)\s*$")
 
 
@@ -23,100 +30,78 @@ def parse_comment(body: str) -> dict[str, Any]:
             "text": rest.strip(), "header_unparsed": False}
 
 
+def parse_time(recorded_at: str | None) -> datetime | None:
+    if not recorded_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(recorded_at)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def sort_key(recorded_at: str | None) -> tuple[int, float]:
     """Chronological sort by the *recorded* scenario time; unparseable last."""
-    if not recorded_at:
-        return (1, 0.0)
-    try:
-        return (0, datetime.fromisoformat(recorded_at).timestamp())
-    except ValueError:
-        return (1, 0.0)
+    dt = parse_time(recorded_at)
+    return (0, dt.timestamp()) if dt else (1, 0.0)
 
 
-# ---------------------------------------------------------------- filler
-# A comment is filler only if its ENTIRE text matches one of these patterns, so a
-# filler opening followed by real content is never dropped.
-FILLER_PATTERNS = [re.compile(p) for p in (
-    r"Picked this up\. Will update once the change is in review\.",
-    r"Discussed in the handover call; details are in the comments here\.",
-    r"Tracking for the release checklist\.",
-    r"Status updated\.",
-    r"Reminder: please keep results in this ticket so the release review can find them\.",
-    r"Linked the related work so dependencies are visible\.",
-    r"Streaming investigation note \d+: checking buffering and UI rendering\.",
-)]
+# ---------------------------------------------------------------- repeats / boilerplate
+def normalize_for_repeat(text: str) -> str:
+    """Digits and whitespace normalised, so 'note 1' / 'note 2' count as repeats."""
+    return re.sub(r"\s+", " ", re.sub(r"\d+", "#", text.lower())).strip()
 
 
-def is_filler(text: str) -> bool:
+def matches_boilerplate(text: str, policy: Policy) -> bool:
     t = text.strip()
-    return any(p.fullmatch(t) for p in FILLER_PATTERNS)
+    return any(re.fullmatch(p, t, re.I | re.S) for p in policy.boilerplate_patterns)
 
 
-# ---------------------------------------------------------------- scope
-_SCOPE_PATTERNS: dict[str, list[re.Pattern[str]]] = {
-    "release": [re.compile(r"\brelease\s+(R\d+\.\d+)\b", re.I)],
-    "commit": [re.compile(r"\bcommit\s+([0-9a-f]{7,40})\b", re.I)],
-    "service": [re.compile(r"\bservice\s+([a-z][a-z0-9-]*[a-z0-9])\b", re.I)],
-    "environment": [
-        re.compile(r"\benvironment\s+([a-z]+)\b", re.I),
-        re.compile(r"\bapproval scope:\s*([a-z]+)\b", re.I),
-        re.compile(r"\bfor\s+(production|staging)\b", re.I),
-    ],
-    "prompt": [re.compile(r"\bprompt(?:\s+bundle)?\s+(p\d+)\b", re.I)],
-}
-SCOPE_FIELDS = ("release", "commit", "service", "environment", "prompt")
+# ---------------------------------------------------------------- target values
+def _value_pattern(value: str) -> re.Pattern[str]:
+    v = value.strip()
+    if re.fullmatch(r"[0-9a-f]{7,40}", v, re.I):  # commit hashes: allow the longer form of a short sha
+        return re.compile(rf"(?<![0-9a-z]){re.escape(v)}[0-9a-f]*(?![0-9a-z])", re.I)
+    return re.compile(rf"(?<![\w.-]){re.escape(v)}(?![\w-]|\.\w)", re.I)
 
 
-def extract_scope(text: str) -> dict[str, list[str]]:
-    found: dict[str, list[str]] = {}
-    for field, pats in _SCOPE_PATTERNS.items():
-        vals: list[str] = []
-        for p in pats:
-            for m in p.finditer(text):
-                v = m.group(1)
-                v = v.lower() if field in ("service", "environment", "commit", "prompt") else v.upper()
-                if v not in vals:
-                    vals.append(v)
-        found[field] = vals
-    return found
+def mentions(text: str, value: str, aliases: tuple[str, ...] = ()) -> bool:
+    return any(_value_pattern(v).search(text) for v in (value, *aliases) if v)
 
 
-def check_scope(text: str, target: dict[str, str], require_prompt: bool) -> dict[str, Any]:
-    """Compare scope statements in `text` with the target, field by field.
+def check_scope(text: str, target: dict[str, str], required_fields: list[str], policy: Policy) -> dict[str, Any]:
+    """Necessary-condition check: does the text state every required target value,
+    and does it also mention a conflicting value (e.g. another environment)?
 
-    A field matches only if it is stated exactly once-valued and equals the target.
+    It cannot prove applicability (only the reader can), but evidence that fails it
+    cannot be treated as applicable.
     """
-    found = extract_scope(text)
-    required = ["release", "commit", "service", "environment"] + (["prompt"] if require_prompt else [])
-    fields: dict[str, Any] = {}
-    full = True
-    for f in SCOPE_FIELDS:
-        want = str(target.get(f, "")).lower() if f != "release" else str(target.get(f, "")).upper()
-        vals = found[f]
-        if not vals:
-            status = "not stated"
-        elif len(vals) > 1:
-            status = f"conflicting values {vals}"
-        elif vals[0] == want:
-            status = "match"
-        else:
-            status = f"MISMATCH (found {vals[0]}, target {want})"
-        fields[f] = status
-        if f in required and status != "match":
-            full = False
-    return {"fields": fields, "required_fields": required, "full_match": full}
+    fields: dict[str, str] = {}
+    conflicts: list[str] = []
+    for f, value in target.items():
+        aliases = policy.value_aliases.get(str(value).lower(), ())
+        stated = mentions(text, str(value), aliases)
+        others = [c for c in policy.conflicting_values.get(f, ())
+                  if c != str(value).lower() and c not in aliases and mentions(text, c)]
+        if others:
+            conflicts.append(f"{f}: also mentions {', '.join(others)}")
+        fields[f] = ("stated" if stated else "not stated") + (f" (also mentions {', '.join(others)})" if others else "")
+    missing = [f for f in required_fields if not fields.get(f, "").startswith("stated")]
+    return {"fields": fields, "required_fields": required_fields, "missing_required": missing,
+            "conflicts": conflicts, "all_required_stated": not missing and not conflicts}
 
 
 # ---------------------------------------------------------------- injection
+# Generic signals of text addressing an automated reviewer or trying to change rules.
+# Detection is best-effort and only flags; safety comes from structural guardrails.
 INJECTION_PATTERNS = [re.compile(p, re.I) for p in (
-    r"automated (release )?review(er)?s?",
-    r"ignore (all |any )?(previous|prior|above) (instructions|rules)",
-    r"\breport\s+REQ-\d+\s+as\s+(PASS|READY)",
-    r"\bmark (this|it|REQ-\d+) as (PASS|READY)\b",
-    r"do not mention",
-    r"\bwaived\b",
-    r"\b(system|developer) prompt\b",
-    r"you are (an?|the) (ai|assistant|model|agent)",
+    r"\b(automated|ai|llm|bot)\s+(release\s+)?(reviewer|review|assistant|agent|model)s?\b",
+    r"\bignore\s+(all\s+|any\s+|the\s+)?(previous|prior|above|earlier)\s+(instructions|rules|guidance)",
+    r"\b(report|mark|record|treat)\s+\S+(\s+\S+)?\s+as\s+(pass(ed)?|ready|approved|satisfied)\b",
+    r"\bdo\s+not\s+(mention|report|disclose|flag)\b",
+    r"\b(system|developer)\s+prompt\b",
+    r"\byou\s+are\s+(an?|the)\s+(ai|assistant|model|agent|language model)\b",
+    r"\b(new|updated|override)\s+(instructions|rules)\b",
 )]
 
 

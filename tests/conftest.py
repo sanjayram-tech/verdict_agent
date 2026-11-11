@@ -121,6 +121,38 @@ def expected() -> dict[str, Any]:
     return json.loads((ROOT / "tests" / "fixtures" / "expected_decisions.json").read_text(encoding="utf-8"))
 
 
+@pytest.fixture(scope="session")
+def labels() -> dict[str, Any]:
+    return json.loads((ROOT / "tests" / "fixtures" / "expected_evidence.json").read_text(encoding="utf-8"))["labels"]
+
+
+DEFAULT_LABEL = {"kind": "other", "outcome": "neutral", "applicable": False}
+
+
+def honest_evidence(comments: dict[str, dict[str, Any]], labels: dict[str, Any],
+                    overrides: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Label every fetched comment the way an honest reviewer would (fixture labels)."""
+    key_to_ref = {f"{c['source_id']}|{c['recorded_at']}": ref for ref, c in comments.items()}
+    out = []
+    for ref, c in comments.items():
+        k = f"{c['source_id']}|{c['recorded_at']}"
+        lab = {**DEFAULT_LABEL, **labels.get(k, {}), **(overrides or {}).get(k, {})}
+        item = {"ref": ref, "kind": lab["kind"], "outcome": lab["outcome"], "applicable": lab["applicable"]}
+        if lab.get("superseded_by") in key_to_ref:
+            item["superseded_by"] = key_to_ref[lab["superseded_by"]]
+        out.append(item)
+    return out
+
+
+def honest_decider(labels: dict[str, Any], decisions: dict[str, str]):
+    """decide() for ExplorerPolicy: honest labels + the given decision per requirement."""
+    def decide(req: str, comments: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        d = decisions[req]
+        return {"decision": d, "rationale": f"scripted {d}", "evidence": honest_evidence(comments, labels),
+                "outstanding": ["further verification on the target build"] if d == "INSUFFICIENT_EVIDENCE" else []}
+    return decide
+
+
 # --------------------------------------------------------------------------- scripted model
 class ScriptedChat:
     def __init__(self, policy: Any):
@@ -166,11 +198,13 @@ class DiscoveryPolicy:
 
 
 class ExplorerPolicy:
-    """Follows links breadth-first (<=3 hops), checks scope of every comment, then
-    asks `decide(req_id, comments, scopes)` for (decision, refs, outstanding)."""
+    """Follows links breadth-first (<=3 hops, never into the manifest), collecting every
+    comment, then asks `decide(req_id, comments)` for the record_decision arguments.
+    No dataset-specific id prefixes are assumed."""
 
-    def __init__(self, decide: Callable[..., tuple[str, list[str], list[str]]]):
+    def __init__(self, decide: Callable[..., dict[str, Any]], check_scope: bool = False):
         self.decide = decide
+        self.do_scope = check_scope
         self.queue: list[tuple[str, int]] = []
         self.visited: set[str] = set()
         self.comments: dict[str, dict[str, Any]] = {}
@@ -178,6 +212,7 @@ class ExplorerPolicy:
         self.to_scope: list[str] = []
         self.req = ""
         self.depths: dict[str, int] = {}
+        self.rejections: list[list[str]] = []
 
     def on_user(self, text: str) -> Turn:
         self.req = re.search(r"Requirement (\S+)", text).group(1)
@@ -191,26 +226,28 @@ class ExplorerPolicy:
                 depth = self.depths.get(data["source_id"], 0)
                 for l in data["linked"]:
                     sid = l["source_id"]
-                    if sid and sid not in self.visited and not sid.startswith("REQ") and sid != "MANIFEST" and depth < 3:
+                    if sid and sid not in self.visited and sid != "MANIFEST" and depth < 3:
                         self.visited.add(sid)
                         self.depths[sid] = depth + 1
                         self.queue.append((sid, depth + 1))
             if call.name == "get_comments":
                 for c in data.get("comments", []):
+                    c["source_id"] = data.get("source_id")
                     self.comments[c["ref"]] = c
-                    self.to_scope.append(c["ref"])
-            if call.name == "check_scope" and "full_match" in res:
+                    if self.do_scope:
+                        self.to_scope.append(c["ref"])
+            if call.name == "check_scope" and "all_required_stated" in res:
                 self.scopes[res["comment_ref"]] = res
             if call.name == "record_decision" and not res.get("accepted"):
-                return turn(ToolCall("record_decision", {"decision": "INSUFFICIENT_EVIDENCE",
-                                                         "rationale": "fallback after rejection",
-                                                         "evidence_refs": [], "outstanding": ["manual review"]}))
+                self.rejections.append(res.get("problems", []))
+                args = dict(call.args)
+                args.update(decision="INSUFFICIENT_EVIDENCE", rationale="fallback after rejection",
+                            outstanding=["manual review"])
+                return turn(ToolCall("record_decision", args))
         if self.queue:
             sid, _ = self.queue.pop(0)
             return turn(ToolCall("get_issue", {"ref": sid}), ToolCall("get_comments", {"ref": sid}))
         if self.to_scope:
             ref = self.to_scope.pop(0)
             return turn(ToolCall("check_scope", {"comment_ref": ref}))
-        decision, refs, outstanding = self.decide(self.req, self.comments, self.scopes)
-        return turn(ToolCall("record_decision", {"decision": decision, "rationale": f"scripted {decision}",
-                                                 "evidence_refs": refs, "outstanding": outstanding}))
+        return turn(ToolCall("record_decision", self.decide(self.req, self.comments)))

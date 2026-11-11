@@ -13,6 +13,7 @@ from .agent import Agent, Budgets, Tracer
 from .config import ConfigError, JiraConfig, ModelConfig, secret_values
 from .jira_client import JiraReader
 from .model import PROVIDERS, build_model
+from .policy import Policy
 from .report import write_outputs
 from .tools import Toolbox
 
@@ -27,8 +28,13 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--out", default="runs", help="output directory (a timestamped subfolder is created)")
     a.add_argument("--provider", default=None, choices=PROVIDERS, help="override LLM_PROVIDER")
     a.add_argument("--model", default=None, help="override LLM_MODEL")
+    a.add_argument("--policy", default=None, help="policy file (default: policy.yaml in the repo root)")
     a.add_argument("--requirements", default=None,
                    help="comma-separated subset to assess, e.g. REQ-05,REQ-08 (smoke test; no overall verdict)")
+    a.add_argument("--no-telemetry", action="store_true",
+                   help="disable OpenTelemetry export even if Langfuse/OTLP settings are present")
+    a.add_argument("--capture-content", action="store_true",
+                   help="include (redacted) tool arguments/results and model text in telemetry spans")
     a.add_argument("--max-tool-calls-per-req", type=int, default=Budgets.max_tool_calls_per_req)
     a.add_argument("--max-wall-s", type=float, default=Budgets.max_wall_s)
     args = ap.parse_args(argv)
@@ -41,7 +47,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     out_dir = Path(args.out) / datetime.now().strftime("%Y%m%d-%H%M%S")
-    tracer = Tracer(out_dir / "trace.jsonl", secret_values())
+    telemetry = None
+    if not args.no_telemetry:
+        try:
+            from .telemetry import Telemetry
+            telemetry = Telemetry.from_env(run_id=f"{args.release}-{out_dir.name}",
+                                           capture_override=True if args.capture_content else None)
+        except Exception as exc:  # noqa: BLE001 - monitoring is optional
+            print(f"  telemetry not started: {type(exc).__name__}: {exc}", file=sys.stderr)
+    if telemetry:
+        print(f"  telemetry: exporting OpenTelemetry traces (content capture "
+              f"{'on' if telemetry.capture else 'off'}); session {args.release}-{out_dir.name}")
+    tracer = Tracer(out_dir / "trace.jsonl", secret_values(), sink=telemetry)
 
     def on_retry(what: str, attempt: int, wait: float) -> None:
         tracer.emit("retry", target=what, attempt=attempt, wait_s=wait)
@@ -52,12 +69,16 @@ def main(argv: list[str] | None = None) -> int:
         print("  note: LLM_TEMPERATURE is ignored for anthropic (current Claude models reject sampling params)",
               file=sys.stderr)
     model = build_model(mcfg, on_retry=on_retry)
-    toolbox = Toolbox(jira, args.project, args.label, args.release)
+    toolbox = Toolbox(jira, args.project, args.label, args.release, policy=Policy.load(args.policy))
     budgets = Budgets(max_tool_calls_per_req=args.max_tool_calls_per_req, max_wall_s=args.max_wall_s)
     print(f"Assessing {args.release} in {args.project} (label {args.label}) with "
           f"{mcfg.provider}:{model.name} → {out_dir}")
     only = [r.strip().upper() for r in args.requirements.split(",") if r.strip()] if args.requirements else None
-    run = Agent(toolbox, model, tracer, budgets, only=only).run()
+    try:
+        run = Agent(toolbox, model, tracer, budgets, only=only).run()
+    finally:
+        if telemetry:
+            telemetry.shutdown()  # flush spans even if the run crashed
     write_outputs(run, out_dir, toolbox.comment_index, args.project, args.label, jcfg.base_url)
 
     for r in run.requirements:

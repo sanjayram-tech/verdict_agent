@@ -1,0 +1,44 @@
+# Assessment policy: organisation-specific knowledge lives here, not in code.
+# The guardrails in tyn/tools.py are structural; this file tells them which roles
+# count, which scope fields are required and how values may be written.
+
+# Roles whose *verified results* (test runs, evaluations, rehearsals) count as evidence.
+verifier_roles:
+  - QA Lead
+  - QA Engineer
+  - Test Lead
+  - Test Engineer
+  - Quality Engineer
+
+# Roles whose *approvals* count as evidence.
+approver_roles:
+  - Security Owner
+  - Release Manager
+
+# Extra requirements triggered by the acceptance-criterion text (case-insensitive substring).
+criterion_rules:
+  - when_criterion_mentions: security owner
+    require_approval_role: Security Owner
+
+# Target fields (from the release manifest) that applicable evidence must state.
+required_scope_fields: [release, commit, service, environment]
+
+# Fields that become required only when the criterion mentions one of these words.
+conditional_scope_fields:
+  prompt: [prompt]
+
+# Alternative spellings accepted for a target value (lower-case).
+value_aliases:
+  production: [prod, prd]
+
+# Values that, if mentioned alongside the target value, make applicability ambiguous.
+# Keep these unambiguous words (e.g. not "test"/"qa", which appear in role names and prose).
+conflicting_values:
+  environment: [staging, development, sandbox, uat, preprod, pre-production]
+
+# Optional regexes (full-match) for boilerplate comments to hide. Empty by default:
+# near-identical comments repeated on one ticket are collapsed generically instead.
+boilerplate_patterns: []
+
+# A comment text repeated at least this many times on one ticket (ignoring digits) is collapsed.
+collapse_repeats_min: 3

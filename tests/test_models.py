@@ -144,6 +144,43 @@ def test_openai_temperature_passed_when_set():
     assert rec.calls[0]["temperature"] == 0.0 and rec.calls[0]["max_tokens"] == 500
 
 
+# ------------------------------------------------------------------ Gemini (native)
+def g_resp(parts=None, finish="STOP"):
+    content = None if parts is None else NS(parts=parts, role="model")
+    return NS(candidates=[NS(content=content, finish_reason=finish)], prompt_feedback=None,
+              usage_metadata=NS(prompt_token_count=10, candidates_token_count=2, thoughts_token_count=0,
+                                total_token_count=12))
+
+
+def test_gemini_malformed_call_is_recoverable_and_roles_alternate():
+    from tyn.model import MALFORMED_CALL, GeminiModel
+    m = GeminiModel("dummy-key", "gemini-2.5-flash")
+    fc = NS(name="get_issue", args={"ref": "REQ-01"}, id="f1")
+    rec = Recorder(g_resp(finish="FinishReason.MALFORMED_FUNCTION_CALL"),
+                   g_resp([NS(function_call=fc, text=None, thought=False)]))
+    m._client = NS(models=NS(generate_content=lambda **kw: rec(**{**kw, "contents": list(kw["contents"])})))
+    chat = m.start_chat("sys", SPECS)
+    t1 = chat.send_user("go")
+    assert t1.calls == [] and t1.finish_reason == MALFORMED_CALL
+    t2 = chat.send_user("your call was malformed, retry")
+    assert t2.calls[0].name == "get_issue"
+    second = rec.calls[1]["contents"]
+    assert len(second) == 1 and second[0].role == "user" and len(second[0].parts) == 2  # merged, no user/user pair
+    rec2 = Recorder(g_resp(finish="FinishReason.SAFETY"))
+    m._client = NS(models=NS(generate_content=rec2))
+    with pytest.raises(ModelError, match="no content"):
+        m.start_chat("sys", SPECS).send_user("go")
+
+
+def test_connect_errors_are_retried():
+    class ConnectError(Exception):
+        pass
+    retries = []
+    m = OpenAICompatibleModel("k", "m", on_retry=lambda *a: retries.append(a))
+    install_openai(m, Recorder(ConnectError("dns"), o_resp(content="ok", finish="stop")))
+    assert m.start_chat("s", SPECS).send_user("hi").text == "ok" and len(retries) == 1
+
+
 # ------------------------------------------------------------------ config + factory
 def test_config_defaults_and_validation(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "g-key")

@@ -103,7 +103,8 @@ def secret_values() -> list[str]:
     """Values that must never appear in traces/reports (used by the redactor)."""
     load_dotenv()
     out = []
-    for name in ("JIRA_API_TOKEN", "JIRA_EMAIL", "LLM_API_KEY", *PROVIDER_KEY_VARS.values()):
+    for name in ("JIRA_API_TOKEN", "JIRA_EMAIL", "LLM_API_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_PUBLIC_KEY",
+                 *PROVIDER_KEY_VARS.values()):
         v = os.environ.get(name)
         if v and len(v) >= 6:
             out.append(v)

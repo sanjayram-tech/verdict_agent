@@ -40,6 +40,10 @@ class ModelError(RuntimeError):
     """Model call failed after retries (or non-retryable). Reported, never hidden."""
 
 
+# Normalised finish reason for "the model attempted a tool call but its arguments were invalid".
+MALFORMED_CALL = "MALFORMED_FUNCTION_CALL"
+
+
 class Chat(Protocol):
     def send_user(self, text: str) -> Turn: ...
     def send_tool_results(self, results: list[tuple[ToolCall, dict[str, Any]]], note: str | None = None) -> Turn: ...
@@ -112,7 +116,9 @@ def _status_classify(exc: Exception) -> tuple[bool, str]:
     if isinstance(code, int):
         return (code in (408, 409, 429) or code >= 500), f"HTTP {code}"
     name = type(exc).__name__
-    if any(k in name for k in ("Connection", "Timeout", "ReadError", "RemoteProtocol")):
+    # Network-level failures from httpx/httpx2/requests/aiohttp (ConnectError, ConnectionError,
+    # ReadTimeout, RemoteProtocolError, ...) are transient and safe to retry for model calls.
+    if any(k in name for k in ("Connect", "Timeout", "ReadError", "WriteError", "RemoteProtocol", "Network")):
         return True, name
     return False, name
 
@@ -163,7 +169,11 @@ class GeminiChat:
 
     def send_user(self, text: str) -> Turn:
         t = self.m._types
-        self.contents.append(t.Content(role="user", parts=[t.Part(text=text)]))
+        if self.contents and self.contents[-1].role == "user":
+            # No model turn since the last user turn (e.g. a malformed call): keep roles alternating.
+            self.contents[-1].parts.append(t.Part(text=text))
+        else:
+            self.contents.append(t.Content(role="user", parts=[t.Part(text=text)]))
         return self._step()
 
     def send_tool_results(self, results: list[tuple[ToolCall, dict[str, Any]]], note: str | None = None) -> Turn:
@@ -184,6 +194,10 @@ class GeminiChat:
         cand = resp.candidates[0] if resp.candidates else None
         finish = str(cand.finish_reason) if cand and cand.finish_reason else None
         if cand is None or cand.content is None or not cand.content.parts:
+            if finish and "MALFORMED_FUNCTION_CALL" in finish:
+                # Recoverable: the model tried to call a tool but produced invalid arguments.
+                # Return an empty turn so the agent can tell it and let it retry (bounded by nudges).
+                return Turn([], "", usage, latency, MALFORMED_CALL)
             raise ModelError(f"gemini returned no content (finish_reason={finish}, "
                              f"feedback={getattr(resp, 'prompt_feedback', None)})")
         self.contents.append(cand.content)  # keeps thought signatures for the next turn

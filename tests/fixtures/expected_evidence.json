@@ -1,0 +1,33 @@
+{
+  "_note": "Honest reviewer labels for the comments that matter, keyed by '<source_id>|<recorded_at>' (stable under the id/value perturbations in tests/perturb.py). Unlisted comments are labelled other/neutral/not applicable. Used only by tests; never shown to the agent. superseded_by uses the same key format.",
+  "labels": {
+    "REC-2081|2026-11-08T14:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": true},
+    "REC-2299|2026-11-06T15:00:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": false},
+    "REC-5825|2026-11-08T17:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": false},
+    "REC-1001|2026-11-08T11:00:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": true},
+    "REC-1600|2026-11-07T16:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": false},
+    "REC-4323|2026-11-07T09:30:00+05:30": {"kind": "other", "outcome": "neutral", "applicable": false},
+    "REC-4323|2026-11-08T14:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": false},
+    "REC-6024|2026-11-08T14:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": true},
+    "REC-1028|2026-11-08T16:30:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": false},
+    "REC-5716|2026-11-08T14:00:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": true},
+    "REC-5716|2026-11-08T18:00:00+05:30": {"kind": "other", "outcome": "neutral", "applicable": false},
+    "REC-7454|2026-10-29T14:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": false},
+    "REC-2828|2026-11-08T15:00:00+05:30": {"kind": "approval", "outcome": "supports", "applicable": false},
+    "REC-8074|2026-11-08T19:00:00+05:30": {"kind": "approval", "outcome": "supports", "applicable": true},
+    "REC-9745|2026-11-06T09:00:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": true,
+                                            "superseded_by": "REC-9745|2026-11-08T14:00:00+05:30"},
+    "REC-9745|2026-11-08T14:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": true},
+    "REC-6499|2026-11-08T16:00:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": false},
+    "REC-4076|2026-11-08T13:00:00+05:30": {"kind": "implementation_claim", "outcome": "neutral", "applicable": false},
+    "REC-9635|2026-11-08T14:00:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": true},
+    "REC-6198|2026-11-08T11:30:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": true},
+    "REC-6011|2026-11-08T11:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": true},
+    "REC-9611|2026-11-06T10:00:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": true,
+                                            "superseded_by": "REC-9611|2026-11-08T14:00:00+05:30"},
+    "REC-9611|2026-11-08T14:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": true},
+    "REC-8515|2026-11-08T16:00:00+05:30": {"kind": "implementation_claim", "outcome": "supports", "applicable": false},
+    "REC-8801|2026-10-28T14:00:00+05:30": {"kind": "verified_result", "outcome": "supports", "applicable": false},
+    "REC-5957|2026-11-08T14:00:00+05:30": {"kind": "verified_result", "outcome": "contradicts", "applicable": true}
+  }
+}

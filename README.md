@@ -84,6 +84,52 @@ Everything is configured in `.env`; no code changes are needed. The model must s
 
 The agent loop, tools, guardrails and report are identical whichever provider you choose. Only `tyn/model.py` differs per provider.
 - **Budgets:** there are per-requirement and run-wide budgets. See `--help` and `Budgets` in `tyn/agent.py`.
+- **Smoke test:** `--requirements REQ-05,REQ-08` assesses only those requirements. The run is marked PARTIAL and has no overall verdict.
+
+### Assessment policy (`policy.yaml`)
+
+Organisation-specific knowledge is configuration, not code:
+- which roles count as **verifiers** (test results) and **approvers**;
+- role requirements triggered by the criterion text (e.g. a criterion mentioning the security owner needs that role's approval);
+- which target fields evidence must state, and when (prompt only if the criterion mentions it);
+- value aliases (`production` ↔ `prod`) and conflicting values (`staging`);
+- optional boilerplate patterns.
+
+Pass `--policy path/to/policy.yaml` to use another file.
+
+### How decisions are checked
+
+The agent records each decision with a **structured evidence assessment**. For every relevant comment it fetched, it gives:
+- the **kind**: verified result, approval, implementation claim, proposed fix or other;
+- the **outcome**: supports, contradicts or neutral;
+- whether it is **applicable** to the target build;
+- what **supersedes** it, if anything.
+
+Code then decides which items **count**: applicable, not superseded, and written by a role the policy authorises. It rejects decisions that leave relevant evidence out, mark wrong-scope comments as applicable, give a fake supersession, or that the counted evidence doesn't support. See [DESIGN.md](DESIGN.md#safety-and-guardrails).
+
+### Monitoring with Langfuse (optional)
+
+Each run can be exported as an **OpenTelemetry** trace. The trace has one root span for the run, and under it:
+- one span per requirement;
+- a `generation` span for every model call, with model, provider and token usage (`gen_ai.*`);
+- a `tool` span for every tool call, with latency, cache hits and errors;
+- a `guardrail` span (warning level) for every rejected decision.
+
+Retries, malformed calls and failures are attached as events.
+
+1. Create a Langfuse project at https://cloud.langfuse.com, or self-host it, and copy its API keys.
+2. Add them to `.env`:
+   ```
+   LANGFUSE_PUBLIC_KEY=pk-lf-...
+   LANGFUSE_SECRET_KEY=sk-lf-...
+   LANGFUSE_HOST=https://cloud.langfuse.com    # or https://us.cloud.langfuse.com, or your self-hosted URL
+   ```
+3. Run `assess` as usual. Each run appears as a trace named `release-assessment R2.4`, with a session ID of the form `<release>-<timestamp>` that matches the `runs/` folder.
+
+**Behaviour:**
+- **Off unless configured.** `--no-telemetry` or `TYN_TELEMETRY=off` disables it. Other backends (Phoenix, Grafana, Jaeger, Honeycomb) work through the standard `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS` variables.
+- **Metadata only by default:** IDs, decisions, counts, timings and tokens. `--capture-content` (or `TYN_TELEMETRY_CAPTURE_CONTENT=true`) also sends tool arguments, results and model text, after the same secret redaction as `trace.jsonl`.
+- **Never breaks a run.** Exporter or handler errors are reported once and ignored. `trace.jsonl` is still written either way.
 
 ## 5. Tests and evaluation (offline, no credentials needed)
 
@@ -95,13 +141,15 @@ python tests/eval_report.py runs/<timestamp>/decisions.json
 The tests use an in-memory Jira, populated by the real importer, and a scripted model to exercise the real tools, guardrails and agent loop. They cover:
 
 - the importer: counts, idempotency, resuming after a partial import, verbatim round-trips;
-- filler removal and scope checks;
-- injection flagging and the decision guardrails;
+- repeat collapsing and format-independent scope checks;
+- injection flagging and every structural guardrail;
+- **generalisation**: the same pipeline on a perturbed copy of the dataset (IDs, values, roles, wording and order all changed) and on what-if variants where the right answer changes. Correct decisions are accepted, and wrong PASS or FAIL decisions are rejected;
 - fail-safe behaviour on model errors, loops and budget exhaustion;
 - trace redaction;
+- telemetry: the span tree, `gen_ai` usage attributes and guardrail spans, no content by default, redaction when content is captured, Langfuse endpoint and auth, and a broken exporter not affecting the run (all with OpenTelemetry's in-memory exporter);
 - the agent's Jira client having no write methods.
 
-`eval_report.py` compares a run with the hand-derived expected outcome in `tests/fixtures/expected_decisions.json`. That file is never shown to the agent.
+`eval_report.py` compares a run with the hand-derived expected outcome in `tests/fixtures/expected_decisions.json`. That file and `tests/fixtures/expected_evidence.json` (honest evidence labels) are used only by tests and are never shown to the agent.
 
 ## Repository layout
 
@@ -110,14 +158,17 @@ tyn/
   config.py       env-based configuration (no credentials on the command line)
   jira_client.py  JiraReader (GET only, used by the agent) / JiraWriter (importer); retries, timeouts
   adf.py          plain text <-> Atlassian Document Format, so text round-trips verbatim
-  importer.py     import / verify
-  text.py         comment header parsing, filler, scope extraction, injection detection, escaping
-  tools.py        the agent tools and the record_decision guardrails
+  importer.py     import / verify / dedupe
+  policy.py       loads policy.yaml (roles, scope fields, aliases)
+  text.py         comment header parsing, repeat collapsing, target-value matching, injection signals, escaping
+  tools.py        the agent tools and the structural record_decision guardrails
   model.py        provider adapters (Gemini, Anthropic, OpenAI-compatible) behind one small interface
   agent.py        discovery + one bounded chat per requirement; tracing; verdict
+  telemetry.py    optional OpenTelemetry export (Langfuse or any OTLP backend)
   report.py       report.md / decisions.json / metrics.json
   cli.py          the assess command
-tests/            offline pytest suite + eval_report.py
+policy.yaml       assessment policy (organisation configuration)
+tests/            offline pytest suite, perturb.py (dataset perturbation), eval_report.py
 inputs/           supplied dataset.json (the import input, never shown to the model)
 submission/       the generated report, trace and metrics from a real run
 ```
