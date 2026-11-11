@@ -163,7 +163,9 @@ class RunResult:
 
 # --------------------------------------------------------------------------- agent
 class Agent:
-    def __init__(self, toolbox: Toolbox, model: Model, tracer: Tracer, budgets: Budgets | None = None):
+    def __init__(self, toolbox: Toolbox, model: Model, tracer: Tracer, budgets: Budgets | None = None,
+                 only: list[str] | None = None):
+        self.only = only  # optional subset of requirement ids (smoke tests); result is PARTIAL, no verdict
         self.tb = toolbox
         self.model = model
         self.tr = tracer
@@ -336,6 +338,12 @@ class Agent:
         status = "COMPLETE"
         try:
             plan = self.discover()
+            if self.only:
+                unknown = [r for r in self.only if r not in self.tb.requirements]
+                if unknown:
+                    self.warnings.append(f"Requested requirement ids not found: {unknown}")
+                plan = [r for r in plan if r in self.only]
+                self.warnings.append(f"Partial run limited to {plan}; no overall verdict is computed.")
             for req_id in plan:
                 if self._out_of_time():
                     rr = ReqResult(id=req_id, key=self.tb.requirements[req_id]["key"],
@@ -354,7 +362,7 @@ class Agent:
             self.warnings.append(f"Run stopped by error: {type(exc).__name__}: {exc}")
             self.tr.emit("failure", phase="run", error=f"{type(exc).__name__}: {exc}")
         if status == "COMPLETE" and len(results) < len(self.tb.requirements):
-            status = "INCOMPLETE"
+            status = "PARTIAL" if self.only else "INCOMPLETE"
         verdict = compute_verdict([r.decision for r in results]) if status == "COMPLETE" else None
         metrics = {
             "provider": getattr(self.model, "provider", None),

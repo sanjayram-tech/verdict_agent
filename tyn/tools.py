@@ -228,7 +228,8 @@ class Toolbox:
             crit = re.search(r"^Acceptance criterion:\s*(.+)$", full, re.M)
             mand = re.search(r"^Mandatory:\s*(\w+)", full, re.M)
             rid = re.search(r"^Requirement ID:\s*(\S+)", full, re.M)
-            req = {"key": key, "id": rid.group(1) if rid else issue["source_id"], "summary": issue["summary"],
+            summary = _SUMMARY_SID_RE.sub("", issue["summary"]).strip()  # drop the "[REQ-xx] " import prefix
+            req = {"key": key, "id": rid.group(1) if rid else issue["source_id"], "summary": summary,
                    "criterion": crit.group(1).strip() if crit else "",
                    "mandatory": (mand.group(1).lower() != "no") if mand else True,
                    "release": issue["release"], "linked_from_manifest": key in manifest_linked}

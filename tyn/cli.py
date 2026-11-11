@@ -27,6 +27,8 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--out", default="runs", help="output directory (a timestamped subfolder is created)")
     a.add_argument("--provider", default=None, choices=PROVIDERS, help="override LLM_PROVIDER")
     a.add_argument("--model", default=None, help="override LLM_MODEL")
+    a.add_argument("--requirements", default=None,
+                   help="comma-separated subset to assess, e.g. REQ-05,REQ-08 (smoke test; no overall verdict)")
     a.add_argument("--max-tool-calls-per-req", type=int, default=Budgets.max_tool_calls_per_req)
     a.add_argument("--max-wall-s", type=float, default=Budgets.max_wall_s)
     args = ap.parse_args(argv)
@@ -54,7 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     budgets = Budgets(max_tool_calls_per_req=args.max_tool_calls_per_req, max_wall_s=args.max_wall_s)
     print(f"Assessing {args.release} in {args.project} (label {args.label}) with "
           f"{mcfg.provider}:{model.name} → {out_dir}")
-    run = Agent(toolbox, model, tracer, budgets).run()
+    only = [r.strip().upper() for r in args.requirements.split(",") if r.strip()] if args.requirements else None
+    run = Agent(toolbox, model, tracer, budgets, only=only).run()
     write_outputs(run, out_dir, toolbox.comment_index, args.project, args.label, jcfg.base_url)
 
     for r in run.requirements:
@@ -62,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Overall: {run.verdict or run.status}   wall {run.metrics['wall_time_s']}s   "
           f"tokens {run.metrics['tokens']['total']}   tool calls {run.metrics['tool_calls']}")
     print(f"Report: {out_dir / 'report.md'}")
-    return 0 if run.status == "COMPLETE" else 1
+    return 0 if run.status in ("COMPLETE", "PARTIAL") else 1
 
 
 if __name__ == "__main__":
