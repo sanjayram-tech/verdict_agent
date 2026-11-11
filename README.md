@@ -4,6 +4,8 @@ A tool-using AI agent that decides whether release **R2.4** is ready, using only
 recorded in Jira. It reads requirements, follows linked verification records, checks that each
 result applies to the target build, and writes an evidence-backed report.
 
+> **Project status:** see [STATUS.md](STATUS.md) for what's done, what's been verified live, and the remaining steps.
+
 The repository contains:
 
 - `tyn/importer.py`: a repeatable, idempotent importer that loads `inputs/dataset.json` into a Jira Cloud project.
