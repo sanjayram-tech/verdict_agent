@@ -48,10 +48,15 @@ def render_markdown(run: RunResult, index: dict[str, dict[str, Any]], project: s
     lines += ["", f"PASS {counts['PASS']} · FAIL {counts['FAIL']} · INSUFFICIENT_EVIDENCE "
                   f"{counts['INSUFFICIENT_EVIDENCE']}", ""]
 
+    sessions = run.metrics.get("sessions") or []
+    multi_session = len(sessions) > 1
     lines += ["## Requirement decisions", ""]
     for r in run.requirements:
+        assessed = (f"- **Assessed:** {r.assessed_at}" + (f" (session {r.session})" if multi_session else "")
+                    if r.assessed_at else None)
         lines += [f"### {r.id} — {md_escape(r.summary)}: {r.decision}", "",
-                  f"- **Jira:** {r.key}", f"- **Acceptance criterion:** {md_escape(r.criterion)}", "",
+                  f"- **Jira:** {r.key}", f"- **Acceptance criterion:** {md_escape(r.criterion)}",
+                  *([assessed] if assessed else []), "",
                   "**Explanation.** " + md_escape(r.rationale), ""]
         if r.conflict_resolution:
             lines += ["**Conflict resolution.** " + md_escape(r.conflict_resolution), ""]
@@ -108,9 +113,22 @@ def render_markdown(run: RunResult, index: dict[str, dict[str, Any]], project: s
               f"- Tokens: prompt {tok.get('prompt')}, output {tok.get('output')}, thinking {tok.get('thoughts')}, "
               f"total {tok.get('total')}",
               f"- Tool calls: {m.get('tool_calls')} (errors {m.get('tool_errors')}, cache hits {m.get('cache_hits')})",
-              "", "| Requirement | Tool calls | Model turns | Total tokens | Seconds |", "|---|---|---|---|---|"]
+              ""]
+    if multi_session:
+        lines += [f"This run was resumed: {len(sessions)} sessions. Totals above are summed across sessions; "
+                  "requirements decided in an earlier session were reused, not re-assessed.", "",
+                  "| Session | Started (UTC) | Status | Model | Assessed | Model calls | Tokens | Seconds |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for s in sessions:
+            lines.append(f"| {s['session']} | {s['started_at']} | {s['status']} | `{s['provider']}:{s['model']}` "
+                         f"| {', '.join(s.get('assessed') or []) or '-'} | {s['model_calls']} "
+                         f"| {s['tokens'].get('total', 0)} | {s['wall_time_s']} |")
+        lines.append("")
+    lines += ["| Requirement | Tool calls | Model turns | Total tokens | Seconds |" + (" Session |" if multi_session else ""),
+              "|---|---|---|---|---|" + ("---|" if multi_session else "")]
     for rid, v in m.get("per_requirement", {}).items():
-        lines.append(f"| {rid} | {v['tool_calls']} | {v['model_turns']} | {v['tokens']['total']} | {v['wall_s']} |")
+        lines.append(f"| {rid} | {v['tool_calls']} | {v['model_turns']} | {v['tokens']['total']} | {v['wall_s']} |"
+                     + (f" {v.get('session', 1)} |" if multi_session else ""))
     lines += ["", "Native Jira authors and timestamps reflect the importer; actor, role and time above are the "
                   "recorded scenario values quoted from the record text.", ""]
     return "\n".join(lines)
@@ -121,7 +139,8 @@ def decisions_json(run: RunResult) -> dict[str, Any]:
             "requirements": [{"id": r.id, "key": r.key, "decision": r.decision, "evidence_refs": r.evidence_refs,
                               "evidence": r.evidence, "conflict_resolution": r.conflict_resolution,
                               "outstanding": r.outstanding, "rationale": r.rationale,
-                              "agent_failure": r.agent_failure, "guardrail_rejections": r.guardrail_rejections}
+                              "agent_failure": r.agent_failure, "guardrail_rejections": r.guardrail_rejections,
+                              "session": r.session, "assessed_at": r.assessed_at}
                              for r in run.requirements]}
 
 

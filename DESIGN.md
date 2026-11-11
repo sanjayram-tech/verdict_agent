@@ -90,6 +90,16 @@ With honest evidence labels (`tests/fixtures/expected_evidence.json`):
 - every correct decision is accepted;
 - every wrong PASS or FAIL is rejected, so the only accepted alternative is INSUFFICIENT_EVIDENCE.
 
+## Checkpoint and resume
+
+- **Checkpoint.** `tyn/checkpoint.py` rewrites `checkpoint.json` atomically (temporary file, then replace) after **every** requirement. It holds the full result: decision, evidence assessment, citations with recorded actor, role and time, tokens and timing.
+- **What resume reuses.** `--resume` keeps validated decisions and re-assesses only requirements with an agent failure or none at all. Assessing those is safe, because a failed requirement is INSUFFICIENT_EVIDENCE by construction.
+- **Re-reading the target.** Discovery on resume reads the manifest directly from Jira, without model calls, and aborts if the target build differs from the original session.
+- **Keeping the report whole.** Comment details and suspicious-content flags of reused requirements are restored, so the report's citations and "Suspicious content" section stay complete.
+- **Metrics** are kept per session and summed.
+- **Telemetry** uses the same session ID, so Langfuse groups the sessions together.
+- **Limit:** if Jira changes between sessions, decisions come from different points in time. Each requirement records `assessed_at` and its session number so a reviewer can see this.
+
 ## Monitoring
 
 `trace.jsonl` is the investigation trace that ships with the submission. **Monitoring** (`tyn/telemetry.py`) is an optional extra for watching and comparing runs over time.

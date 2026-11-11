@@ -10,8 +10,9 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .model import MALFORMED_CALL, Model, ModelError, ToolCall, Turn
 from .tools import DISCOVERY_TOOLS, INVESTIGATION_TOOLS, TOOL_SPECS, Toolbox
@@ -112,16 +113,21 @@ class Tracer:
     """Writes every event to trace.jsonl (redacted) and forwards it to an optional sink
     (e.g. tyn.telemetry.Telemetry). The sink only ever sees the redacted record."""
 
-    def __init__(self, path: Path | None, secrets: list[str] | None = None, sink: Any = None):
+    def __init__(self, path: Path | None, secrets: list[str] | None = None, sink: Any = None,
+                 append: bool = False):
         self.path = path
         self.secrets = secrets or []
         self.sink = sink
+        self.append = append  # resume: keep the earlier sessions' events
         self.seq = 0
         self.t0 = time.time()
         self.events: list[dict[str, Any]] = []
         if path:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("", encoding="utf-8")
+            if not (append and path.exists()):
+                path.write_text("", encoding="utf-8")
+            elif append:
+                self.seq = sum(1 for _ in path.open(encoding="utf-8"))  # continue numbering
 
     def emit(self, event: str, **data: Any) -> None:
         self.seq += 1
@@ -163,6 +169,9 @@ class ReqResult:
     model_turns: int = 0
     tokens: dict[str, int] = field(default_factory=lambda: {"prompt": 0, "output": 0, "thoughts": 0, "total": 0})
     wall_s: float = 0.0
+    session: int = 1                 # which run session assessed it (resume)
+    assessed_at: str | None = None   # UTC time the decision was recorded
+    cited: dict[str, dict[str, Any]] = field(default_factory=dict)  # comment details for the report (survive resume)
 
 
 def compute_verdict(decisions: list[str]) -> str:
@@ -187,8 +196,12 @@ class RunResult:
 # --------------------------------------------------------------------------- agent
 class Agent:
     def __init__(self, toolbox: Toolbox, model: Model, tracer: Tracer, budgets: Budgets | None = None,
-                 only: list[str] | None = None):
+                 only: list[str] | None = None, on_result: Callable[[ReqResult], None] | None = None,
+                 resume: dict[str, Any] | None = None):
         self.only = only  # optional subset of requirement ids (smoke tests); result is PARTIAL, no verdict
+        self.on_result = on_result  # checkpoint hook, called after every requirement
+        self.resume = resume        # {"target", "results": {id: ReqResult}, "sessions": [...]} from a checkpoint
+        self.session_no = len(resume["sessions"]) + 1 if resume else 1
         self.tb = toolbox
         self.model = model
         self.tr = tracer
@@ -230,6 +243,21 @@ class Agent:
         return res
 
     # ---------------------------------------------------------------- phases
+    def discover_direct(self) -> list[str]:
+        """Resume: re-read the manifest and requirements without spending model calls, and
+        refuse to continue if the target build changed since the original session."""
+        for name in ("get_manifest", "list_requirements"):
+            res = self._run_tool(ToolCall(name, {}), DISCOVERY_TOOLS, "resume", None, 0)
+            if "error" in res:
+                raise RuntimeError(f"Cannot read {name}: {res['error']}")
+        expected = (self.resume or {}).get("target")
+        if expected and expected != self.tb.target:
+            raise RuntimeError(f"Target changed since the run started ({expected} -> {self.tb.target}); "
+                               "start a new run instead of resuming")
+        plan = sorted(self.tb.requirements)
+        self.tr.emit("plan", requirements=plan, target=self.tb.target)
+        return plan
+
     def discover(self) -> list[str]:
         """Model-driven discovery; falls back to direct tool calls if the model fails (reported)."""
         chat = self.model.start_chat(DISCOVERY_PROMPT, {n: TOOL_SPECS[n] for n in DISCOVERY_TOOLS})
@@ -357,6 +385,10 @@ class Agent:
             rr.outstanding = ["Re-run or manually assess this requirement."]
             self.tr.emit("failure", req=req_id, error=rr.agent_failure)
         rr.wall_s = round(time.time() - start, 2)
+        rr.session = self.session_no
+        rr.assessed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        rr.cited = {ref: {k: c.get(k) for k in ("issue_key", "source_id", "actor", "role", "recorded_at", "text")}
+                    for ref in rr.evidence_refs if (c := self.tb.comment_index.get(ref))}
         self.tr.emit("decision", req=req_id, decision=rr.decision, evidence_refs=rr.evidence_refs,
                      agent_failure=rr.agent_failure, tool_calls=rr.tool_calls, tokens=rr.tokens)
         return rr
@@ -367,8 +399,17 @@ class Agent:
                      release=self.tb.release, budgets=self.b.__dict__)
         results: list[ReqResult] = []
         status = "COMPLETE"
+        prior: dict[str, ReqResult] = (self.resume or {}).get("results", {})
         try:
-            plan = self.discover()
+            if self.resume:
+                plan = self.discover_direct()
+                reuse = sorted(r for r, v in prior.items() if not v.agent_failure)
+                self.tr.emit("resume", session=self.session_no, reused=reuse,
+                             rerun=sorted(r for r in plan if r not in reuse))
+                self.warnings.append(f"Resumed run (session {self.session_no}): reused {len(reuse)} validated "
+                                     f"decision(s); assessing {len([r for r in plan if r not in reuse])}.")
+            else:
+                plan = self.discover()
             if self.only:
                 unknown = [r for r in self.only if r not in self.tb.requirements]
                 if unknown:
@@ -376,15 +417,22 @@ class Agent:
                 plan = [r for r in plan if r in self.only]
                 self.warnings.append(f"Partial run limited to {plan}; no overall verdict is computed.")
             for req_id in plan:
+                done = prior.get(req_id)
+                if done is not None and not done.agent_failure:
+                    results.append(done)  # validated in an earlier session: not re-assessed
+                    continue
                 if self._out_of_time():
                     rr = ReqResult(id=req_id, key=self.tb.requirements[req_id]["key"],
                                    summary=self.tb.requirements[req_id]["summary"],
                                    criterion=self.tb.requirements[req_id]["criterion"],
                                    agent_failure="not assessed: run wall-clock budget exhausted",
-                                   rationale="Not assessed (budget); defaults to INSUFFICIENT_EVIDENCE.")
-                    results.append(rr)
-                    continue
-                results.append(self.investigate(req_id))
+                                   rationale="Not assessed (budget); defaults to INSUFFICIENT_EVIDENCE.",
+                                   session=self.session_no)
+                else:
+                    rr = self.investigate(req_id)
+                results.append(rr)
+                if self.on_result:
+                    self.on_result(rr)  # checkpoint immediately, so an interruption loses nothing
         except KeyboardInterrupt:
             status = "INCOMPLETE"
             self.warnings.append("Run interrupted by user; report is partial.")
@@ -394,19 +442,49 @@ class Agent:
             self.tr.emit("failure", phase="run", error=f"{type(exc).__name__}: {exc}")
         if status == "COMPLETE" and len(results) < len(self.tb.requirements):
             status = "PARTIAL" if self.only else "INCOMPLETE"
+        # Results reused from earlier sessions keep their comment details and suspicious flags.
+        for r in results:
+            for ref, c in r.cited.items():
+                self.tb.comment_index.setdefault(ref, c)
+            for e in r.evidence:
+                if e.get("suspicious") and e["ref"] not in self.tb.suspicious and e["ref"] in r.cited:
+                    c = r.cited[e["ref"]]
+                    self.tb.suspicious[e["ref"]] = {"ref": e["ref"], "source_id": c.get("source_id"),
+                                                    "actor": c.get("actor"), "role": c.get("role"),
+                                                    "recorded_at": c.get("recorded_at"), "signals": [],
+                                                    "text": c.get("text") or ""}
         verdict = compute_verdict([r.decision for r in results]) if status == "COMPLETE" else None
-        metrics = {
+        session = {
+            "session": self.session_no,
+            "started_at": datetime.fromtimestamp(self.t0, timezone.utc).isoformat(timespec="seconds"),
+            "status": status,
             "provider": getattr(self.model, "provider", None),
             "model": self.model.name,
             "wall_time_s": round(time.time() - self.t0, 2),
             "model_calls": self.model_calls,
-            "tokens": self.tokens,
+            "tokens": dict(self.tokens),
             "tool_calls": self.total_tool_calls,
             "tool_errors": self.tool_errors,
             "cache_hits": self.cache_hits,
-            "per_requirement": {r.id: {"tool_calls": r.tool_calls, "model_turns": r.model_turns,
-                                       "tokens": r.tokens, "wall_s": r.wall_s} for r in results},
+            "assessed": [r.id for r in results if r.session == self.session_no],
         }
+        sessions = list((self.resume or {}).get("sessions", [])) + [session]
+        metrics = {
+            **{k: session[k] for k in ("provider", "model")},
+            "wall_time_s": round(sum(s["wall_time_s"] for s in sessions), 2),
+            "model_calls": sum(s["model_calls"] for s in sessions),
+            "tokens": {k: sum(s["tokens"].get(k, 0) for s in sessions) for k in ("prompt", "output", "thoughts", "total")},
+            "tool_calls": sum(s["tool_calls"] for s in sessions),
+            "tool_errors": sum(s["tool_errors"] for s in sessions),
+            "cache_hits": sum(s["cache_hits"] for s in sessions),
+            "sessions": sessions,
+            "per_requirement": {r.id: {"tool_calls": r.tool_calls, "model_turns": r.model_turns,
+                                       "tokens": r.tokens, "wall_s": r.wall_s, "session": r.session}
+                                for r in results},
+        }
+        if len({(s["provider"], s["model"]) for s in sessions}) > 1:
+            self.warnings.append("Sessions used different models: " +
+                                 ", ".join(f"session {s['session']}: {s['provider']}:{s['model']}" for s in sessions))
         self.tr.emit("run_end", status=status, verdict=verdict, metrics=metrics, warnings=self.warnings)
         return RunResult(status=status, verdict=verdict, target=self.tb.target, requirements=results,
                          metrics=metrics, warnings=self.warnings,

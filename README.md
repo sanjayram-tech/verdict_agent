@@ -86,6 +86,23 @@ The agent loop, tools, guardrails and report are identical whichever provider yo
 - **Budgets:** there are per-requirement and run-wide budgets. See `--help` and `Budgets` in `tyn/agent.py`.
 - **Smoke test:** `--requirements REQ-05,REQ-08` assesses only those requirements. The run is marked PARTIAL and has no overall verdict.
 
+### Resuming an interrupted run
+
+After every requirement, the run folder's `checkpoint.json` is rewritten atomically. Whatever stops a run (Ctrl+C, a crash, an exhausted model quota), nothing already decided is lost. To continue:
+
+```bash
+python -m tyn.cli assess --resume runs/<timestamp>
+```
+
+- **Reused, not re-assessed:** requirements that already have a validated decision.
+- **Assessed again:** requirements that ended in an agent failure (quota, network, loop, budget) or were never reached.
+- **No model calls on start:** the manifest and requirements are re-read from Jira directly. The run **refuses to resume if the target build changed**.
+- **Same run folder:** the trace is appended (with a `resume` event), and metrics are summed across sessions. The report is regenerated as one report with a "Sessions" table, and each requirement shows when, and in which session, it was assessed.
+- **Same scope:** project, label, release and `--requirements` come from the checkpoint. You can switch provider or model for the resumed session; the report notes it.
+- **Hint:** when anything is left unfinished, the command prints the exact `--resume` line to run.
+
+Typical use on a free tier: run until the daily quota runs out, then resume after it resets.
+
 ### Assessment policy (`policy.yaml`)
 
 Organisation-specific knowledge is configuration, not code:
@@ -146,6 +163,7 @@ The tests use an in-memory Jira, populated by the real importer, and a scripted 
 - **generalisation**: the same pipeline on a perturbed copy of the dataset (IDs, values, roles, wording and order all changed) and on what-if variants where the right answer changes. Correct decisions are accepted, and wrong PASS or FAIL decisions are rejected;
 - fail-safe behaviour on model errors, loops and budget exhaustion;
 - trace redaction;
+- checkpoint and resume: an interrupted run continues without redoing finished requirements; quota-failed requirements are re-assessed; a changed target is refused; citations and injection flags survive the resume;
 - telemetry: the span tree, `gen_ai` usage attributes and guardrail spans, no content by default, redaction when content is captured, Langfuse endpoint and auth, and a broken exporter not affecting the run (all with OpenTelemetry's in-memory exporter);
 - the agent's Jira client having no write methods.
 
@@ -164,6 +182,7 @@ tyn/
   tools.py        the agent tools and the structural record_decision guardrails
   model.py        provider adapters (Gemini, Anthropic, OpenAI-compatible) behind one small interface
   agent.py        discovery + one bounded chat per requirement; tracing; verdict
+  checkpoint.py   per-requirement checkpoint and --resume
   telemetry.py    optional OpenTelemetry export (Langfuse or any OTLP backend)
   report.py       report.md / decisions.json / metrics.json
   cli.py          the assess command
