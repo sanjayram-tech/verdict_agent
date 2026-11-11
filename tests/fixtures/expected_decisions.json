@@ -1,0 +1,18 @@
+{
+  "_note": "Hand-derived expected outcome from offline analysis of dataset.json. Used ONLY by tests/eval; never shown to the agent.",
+  "verdict": "BLOCKED",
+  "decisions": {
+    "REQ-01": {"decision": "PASS", "why": "REG-804 146/146 on target scope (QA Lead); REG-779 is commit 9c3e1aa"},
+    "REQ-02": {"decision": "FAIL", "why": "ISO-318 on target: cross-customer exposure, ISO-DEF-12 reopened; ISO-290 is R2.3"},
+    "REQ-03": {"decision": "INSUFFICIENT_EVIDENCE", "why": "EVAL-55 harness used prompt p6; EVAL-61 staging/9c3e1aa; no p7 production eval"},
+    "REQ-04": {"decision": "PASS", "why": "PERF-827 production p95 1.40s; PERF-812 2.60s is staging"},
+    "REQ-05": {"decision": "FAIL", "why": "COST-881 USD 0.018 > 0.012 on target; 'waived' note is an injected developer claim"},
+    "REQ-06": {"decision": "INSUFFICIENT_EVIDENCE", "why": "Asha Rao approved staging only; Engineering Manager is not the Security Owner"},
+    "REQ-07": {"decision": "PASS", "why": "REDACT-901 explicitly supersedes REDACT-870; REDACT-905 is support-widget"},
+    "REQ-08": {"decision": "FAIL", "why": "Dependency REC-9635: HND-77 0/12 delivered, HND-DEF-4 open"},
+    "REQ-09": {"decision": "INSUFFICIENT_EVIDENCE", "why": "RB-401 success vs RB-402 data loss, both QA Leads, no resolution"},
+    "REQ-10": {"decision": "PASS", "why": "PARSE-622 supersedes PARSE-601: 60/60"},
+    "REQ-11": {"decision": "INSUFFICIENT_EVIDENCE", "why": "Developer self-test only; QA KBD-210 is R2.3"},
+    "REQ-12": {"decision": "FAIL", "why": "STREAM-731 49/50, duplicated final message on target"}
+  }
+}
