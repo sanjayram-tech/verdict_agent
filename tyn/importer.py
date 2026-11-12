@@ -6,7 +6,7 @@ Usage:
 
 --project defaults to JIRA_PROJECT.
 
-Pass 1 creates one issue per record (bulk, 50 per call), pass 2 posts comments
+Pass 1 creates one issue per record (bulk, 25 per call), pass 2 posts comments
 verbatim in recorded-time order, pass 3 creates "Relates" links. Every pass first
 reads what already exists in Jira, so re-running creates nothing new.
 """
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -312,11 +313,48 @@ def run_verify(data: dict[str, Any], project: str, wait_s: int = 120, workers: i
     if want_pairs - got_pairs or len(want_pairs) != len(expected_link_pairs(records)):
         ok = False
 
-    # Text search sanity check (agent relies on comment text being indexed).
-    probe = list(jira.search(scope_jql(project, label) + ' AND text ~ "\\"HND-77\\""', ["labels"], 5))
-    print(f"Text-search probe for HND-77: {[source_id_from_labels(i['fields']['labels']) for i in probe]}")
+    # Text search sanity check: the agent relies on comment text being indexed. The probe is
+    # chosen from the dataset itself (a token unique to one record's comments), not hard-coded.
+    probe = pick_search_probe(records)
+    if probe is None:
+        print("Text-search probe: skipped (no comment token unique to a single record)")
+    else:
+        token, expected_sid = probe
+        found: list[str | None] = []
+        for attempt in range(4):  # comment text can be indexed a little after the issue itself
+            hits = jira.search(scope_jql(project, label) + f' AND text ~ "\\"{token}\\""', ["labels"], 10)
+            found = [source_id_from_labels(i["fields"]["labels"]) for i in hits]
+            if expected_sid in found or attempt == 3:
+                break
+            time.sleep(10)
+        print(f"Text-search probe for '{token}': {found} (expected {expected_sid})")
+        if expected_sid not in found:
+            ok = False
+            print("  comment text is not searchable yet; wait a minute and run verify again")
     print("VERIFY OK" if ok else "VERIFY FAILED")
     return 0 if ok else 1
+
+
+_PROBE_TOKEN = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b")  # run/defect/ticket-style identifiers
+
+
+def pick_search_probe(records: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """Pick an identifier-like token that occurs in exactly one record (anywhere in its text)
+    and in that record's comments, so a phrase search must return exactly that record."""
+    owners: dict[str, set[str]] = {}
+    in_comments: dict[str, str] = {}
+    for r in records:
+        texts = [r.get("summary", ""), r.get("description", "")] + list(r.get("comments", []))
+        for t in texts:
+            for tok in _PROBE_TOKEN.findall(t):
+                owners.setdefault(tok, set()).add(r["source_id"])
+        for c in r.get("comments", []):
+            for tok in _PROBE_TOKEN.findall(c.partition("\n")[2]):  # comment body, not the header line
+                in_comments.setdefault(tok, r["source_id"])
+    ids = {r["source_id"] for r in records}
+    candidates = sorted(tok for tok, sid in in_comments.items()
+                        if owners.get(tok) == {sid} and tok not in ids)
+    return (candidates[0], in_comments[candidates[0]]) if candidates else None
 
 
 def run_dedupe(data: dict[str, Any], project: str, apply: bool) -> int:

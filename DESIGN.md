@@ -1,5 +1,70 @@
 # Design notes
 
+## Short explanation
+
+### Design choices
+- **Agent shape.** A discovery step reads the release manifest and requirement list from Jira. Then each requirement gets its **own fresh, bounded model conversation**, in which the model chooses every lookup (`get_issue`, `get_comments`, `search_issues`, `check_scope`). This keeps prompts small, stops one investigation from biasing the next, and confines a failure to one requirement. The overall verdict (BLOCKED / NEEDS_REVIEW / READY) is computed in code, because the rule is fully specified.
+- **Tools.** The tools are read-only and locked to the dataset label. Search takes typed fields and code builds the JQL, so the model can't escape the scope or write broken queries. Comments are sorted by their *recorded* time, and repeated boilerplate is collapsed to save context. The scope check compares the manifest's target values (release, commit, service, environment, prompt), not a sentence format.
+- **Guardrails are structural, not tuned to this dataset.** The model must label every relevant comment it fetched: its kind, whether it supports or contradicts the criterion, whether it applies, and what supersedes it. Code then checks:
+  - completeness;
+  - that "applicable" comments actually state the target values;
+  - that supersession points to a later comment;
+  - authority, using roles from `policy.yaml`;
+  - that the decision matches the counted evidence.
+
+  Code only rejects decisions, with reasons; it never makes them. After two rejections a requirement falls back to INSUFFICIENT_EVIDENCE. Organisation knowledge (roles, aliases, required fields) lives in `policy.yaml`. Tests run the whole pipeline on a perturbed copy of the data (all IDs, values and roles renamed, order shuffled) and on what-if variants where the right answer changes.
+- **Safety.**
+  - Ticket text is passed to the model as untrusted data, never instructions, and injected instructions are flagged in the report.
+  - There are no write or web tools.
+  - Secrets are redacted from traces, and quoted text in the report is escaped.
+  - Any model, tool or budget failure makes that requirement INSUFFICIENT_EVIDENCE rather than PASS.
+- **Importer.**
+  - Records go into Jira verbatim (as Atlassian Document Format), with source ID, kind, release and status as labels.
+  - Re-running it creates nothing; create requests are never retried after a timeout, and `dedupe` and `verify` are included.
+- **No dataset-size assumptions.**
+  - Requirements are discovered from the manifest, and run-wide budgets scale with how many there are.
+  - Requirement listing and comments are fully paged.
+  - Only comments that can't be evidence (no target value and no run, defect or ticket ID) are collapsed as repeats, because real results often differ only in their numbers.
+  - `verify` picks its search probe from the data.
+  - Tests cover a 130-requirement synthetic manifest.
+- **Practicalities.**
+  - Python with no agent framework, so the loop, budgets and trace stay explicit.
+  - Works with any tool-calling model: Gemini, Claude, or any OpenAI-compatible API including local models.
+  - A per-requirement checkpoint with `--resume` for interrupted or quota-limited runs.
+  - Optional OpenTelemetry/Langfuse monitoring, off by default, metadata only.
+- **Result.** The submitted run (`submission/`) scored 12/12 against the hand-derived answers, verdict BLOCKED. It took 88 model calls, 375k tokens and 9.2 minutes on `gemini-3.5-flash-lite`.
+
+### Known limits
+- **The model's judgement is trusted for meaning.** Code can't tell that USD 0.018 exceeds a USD 0.012 limit. The guardrails make careless or dishonest labelling *visible and inconsistent* (every relevant comment listed, cited, timestamp-checked and shown in the report), but not impossible.
+- **The fail-safe can produce the right answer for the wrong reason.** In the submitted run, REQ-06 and REQ-11 reached INSUFFICIENT_EVIDENCE because both of the model's attempts were rejected, not through an accepted decision. The report says so.
+- **Target-value matching is necessary but not sufficient.** A comment that mentions every target value but describes a different run needs the model's judgement.
+- **Trust in the data.** Actor, role and time come from the comment header the importer preserves. Roles are trusted as written, so Jira permissions are the real trust boundary. "Relates" links lose their link-type meaning.
+- **Operations.** Results vary between models and runs. Free tiers hit rate and daily limits (hence `--resume`). Jira content is sent to the chosen model provider, and to the monitoring backend if enabled; use a local model and self-hosted Langfuse for real data.
+- **Evaluation.** The expected answers were derived by the same team, with AI help. The perturbation tests reduce, but don't remove, the risk of shared blind spots.
+
+### How AI assistance was used
+- **Claude Code** (Anthropic's coding assistant) was used throughout, and commits are marked `Co-Authored-By: Claude`:
+  - offline dataset analysis before any code (link graphs, filler comments, the injected note), which produced the hand-checked expected answers used only by tests;
+  - design discussion;
+  - all implementation, tests and documentation;
+  - debugging live runs.
+- **People made the decisions and checked the results:**
+  - Python; any model provider; structured search instead of raw JQL; a strong emphasis on safety;
+  - *"don't overfit to the dataset"*, which led to redesigning the guardrails around structural checks and a policy file;
+  - Langfuse for monitoring, and resume support;
+  - setting up Jira, running the import and the full assessment, and reviewing every result.
+- **Problems found in live runs and fixed with AI help:**
+  - a bulk create that timed out and was retried, duplicating issues (now no blind retries for writes, plus `dedupe`);
+  - an unretried network `ConnectError`;
+  - Gemini's `MALFORMED_FUNCTION_CALL`;
+  - tool arguments of the wrong type aborting a run;
+  - Langfuse over-counting tokens (fix verified against Langfuse Cloud).
+- **At runtime the model only judges evidence, one requirement at a time.** The verdict, scope matching, citation checks and authority checks are deterministic code.
+
+---
+
+The sections below give the full detail.
+
 ## Architecture
 
 ```
@@ -40,7 +105,7 @@ dataset.json ──importer──▶ Jira Cloud project ◀──read-only tools
 - **Scope.** Every query is `project = P AND labels = "<scope label>"`, and every fetched issue must carry the label.
 - **Hidden import metadata.** Jira's native author, timestamps and status belong to the importer, so tools never return them.
 - **Size limits.** Results are compact JSON and truncated.
-- **Repeat collapsing, not a phrase list.** Comments repeated on the same ticket, ignoring digits (3 or more by default), are collapsed to the first one plus a count. This turns the 62 "investigation note N" comments on one ticket into a single entry. Short generic boilerplate is simply shown, since it costs a few tokens. Optional `boilerplate_patterns` in `policy.yaml` can hide an organisation's own boilerplate, and `include_hidden=true` shows everything.
+- **Repeat collapsing, not a phrase list.** Comments repeated on the same ticket, ignoring digits (3 or more by default), are collapsed to the first one plus a count. Comments that mention a target value or an identifier (run, defect or ticket ID) are **never** collapsed, because results that differ only in their numbers are still distinct evidence. This turns the 62 "investigation note N" comments on one ticket into a single entry. Short generic boilerplate is simply shown, since it costs a few tokens. Optional `boilerplate_patterns` in `policy.yaml` can hide an organisation's own boilerplate, and `include_hidden=true` shows everything.
 - **Caching.** Results are cached for the run, and cache hits are marked in the trace.
 
 ## Safety and guardrails
@@ -131,15 +196,4 @@ With honest evidence labels (`tests/fixtures/expected_evidence.json`):
 
 ## How AI assistance was used
 
-Claude Code, an AI coding assistant, was used throughout, with the author reviewing and steering each step:
-
-- **Analysis.** It read the dataset offline before any code was written:
-  - mapped the comment types (finding that "Linked the related…" and "Streaming investigation note…" are filler);
-  - walked each requirement's link graph, including backlinks;
-  - confirmed that no record outside the linked graph references commit `b7a91f2`;
-  - found the REC-5716 injection.
-
-  This produced `tests/fixtures/expected_decisions.json`, which is used only for evaluation.
-- **Design.** The plan was discussed and revised with the author: Python versus Rust, structured search versus raw JQL, the exact Jira calls for each tool, and the safety and guardrail layer.
-- **Implementation and tests.** Claude Code wrote the code and the offline test suite. The author set the requirements for safety and guardrails, and for the agent to work with any model provider.
-- **What was not delegated to the model at runtime:** the overall verdict, scope matching and the citation and authority checks are deterministic code. The model decides each requirement from evidence it fetches itself.
+See [Short explanation → How AI assistance was used](#how-ai-assistance-was-used) at the top of this document.

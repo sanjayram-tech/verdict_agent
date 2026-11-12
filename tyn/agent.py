@@ -81,13 +81,22 @@ FINAL_NOTE = ("Tool budget for this requirement is exhausted. Call record_decisi
 
 @dataclass
 class Budgets:
+    """Per-requirement limits are fixed; run-wide limits scale with the number of planned
+    requirements unless set explicitly, so a larger manifest is not cut short."""
     max_tool_calls_per_req: int = 20
     max_model_turns_per_req: int = 26
     max_tokens_per_req: int = 400_000
-    max_total_tool_calls: int = 300
-    max_wall_s: float = 1800.0
+    max_total_tool_calls: int | None = None  # None -> (per_req + 5) * n_requirements + 20
+    max_wall_s: float | None = None          # None -> wall_s_per_req * n_requirements + 300
+    wall_s_per_req: float = 300.0
     max_discovery_turns: int = 8
     max_identical_calls: int = 3
+
+    def total_tool_calls_for(self, n: int) -> int:
+        return self.max_total_tool_calls or (self.max_tool_calls_per_req + 5) * max(n, 1) + 20
+
+    def wall_s_for(self, n: int) -> float:
+        return self.max_wall_s or self.wall_s_per_req * max(n, 1) + 300.0
 
 
 # --------------------------------------------------------------------------- tracing
@@ -234,10 +243,20 @@ class Agent:
         self.model_calls = 0
         self.tokens = {"prompt": 0, "output": 0, "thoughts": 0, "total": 0}
         self.warnings: list[str] = []
+        # Until the plan is known (discovery is itself bounded by max_discovery_turns):
+        self.total_cap = self.b.max_total_tool_calls or 10**9
+        self.wall_cap = self.b.max_wall_s or float("inf")
 
     # ---------------------------------------------------------------- utils
+    def _set_limits(self, n_requirements: int) -> None:
+        """Derive run-wide limits from the plan size (or the explicit budget)."""
+        self.total_cap = self.b.total_tool_calls_for(n_requirements)
+        self.wall_cap = self.b.wall_s_for(n_requirements)
+        self.tr.emit("limits", requirements=n_requirements, max_total_tool_calls=self.total_cap,
+                     max_wall_s=self.wall_cap)
+
     def _out_of_time(self) -> bool:
-        return time.time() - self.t0 > self.b.max_wall_s
+        return time.time() - self.t0 > self.wall_cap
 
     def _account(self, turn: Turn, phase: str, rr: ReqResult | None = None, step: int = 0,
                  sent: dict[str, Any] | None = None) -> None:
@@ -366,7 +385,7 @@ class Agent:
                     if seen[sig] >= self.b.max_identical_calls:
                         failure = f"loop detected: {call.name} called {seen[sig]} times with identical arguments"
                         break
-                    if self.total_tool_calls >= self.b.max_total_tool_calls:
+                    if self.total_tool_calls >= self.total_cap:
                         failure = "run-wide tool call budget exhausted"
                         break
                     rr.tool_calls += 1
@@ -438,6 +457,7 @@ class Agent:
                     self.warnings.append(f"Requested requirement ids not found: {unknown}")
                 plan = [r for r in plan if r in self.only]
                 self.warnings.append(f"Partial run limited to {plan}; no overall verdict is computed.")
+            self._set_limits(sum(1 for r in plan if r not in prior or prior[r].agent_failure))
             for req_id in plan:
                 done = prior.get(req_id)
                 if done is not None and not done.agent_failure:

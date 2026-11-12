@@ -40,7 +40,10 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--capture-content", action="store_true",
                    help="include (redacted) tool arguments/results and model text in telemetry spans")
     a.add_argument("--max-tool-calls-per-req", type=int, default=Budgets.max_tool_calls_per_req)
-    a.add_argument("--max-wall-s", type=float, default=Budgets.max_wall_s)
+    a.add_argument("--max-wall-s", type=float, default=None,
+                   help="run wall-clock limit in seconds (default: scales with the number of requirements)")
+    a.add_argument("--max-total-tool-calls", type=int, default=None,
+                   help="run-wide tool-call limit (default: scales with the number of requirements)")
     args = ap.parse_args(argv)
 
     # ---- run folder: new, or the one being resumed
@@ -95,7 +98,8 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
     model = build_model(mcfg, on_retry=on_retry)
     toolbox = Toolbox(jira, project, label, release, policy=Policy.load(args.policy))
-    budgets = Budgets(max_tool_calls_per_req=args.max_tool_calls_per_req, max_wall_s=args.max_wall_s)
+    budgets = Budgets(max_tool_calls_per_req=args.max_tool_calls_per_req, max_wall_s=args.max_wall_s,
+                      max_total_tool_calls=args.max_total_tool_calls)
 
     def on_result(rr: ReqResult) -> None:
         ckpt.set_target(toolbox.target)
