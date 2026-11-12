@@ -1,0 +1,195 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.5-flash-lite",
+  "wall_time_s": 551.35,
+  "model_calls": 88,
+  "tokens": {
+    "prompt": 362357,
+    "output": 12745,
+    "thoughts": 0,
+    "total": 375102
+  },
+  "tool_calls": 126,
+  "tool_errors": 0,
+  "cache_hits": 51,
+  "sessions": [
+    {
+      "session": 1,
+      "started_at": "2026-11-12T06:45:29+00:00",
+      "status": "COMPLETE",
+      "provider": "gemini",
+      "model": "gemini-3.5-flash-lite",
+      "wall_time_s": 551.35,
+      "model_calls": 88,
+      "tokens": {
+        "prompt": 362357,
+        "output": 12745,
+        "thoughts": 0,
+        "total": 375102
+      },
+      "tool_calls": 126,
+      "tool_errors": 0,
+      "cache_hits": 51,
+      "assessed": [
+        "REQ-01",
+        "REQ-02",
+        "REQ-03",
+        "REQ-04",
+        "REQ-05",
+        "REQ-06",
+        "REQ-07",
+        "REQ-08",
+        "REQ-09",
+        "REQ-10",
+        "REQ-11",
+        "REQ-12"
+      ]
+    }
+  ],
+  "per_requirement": {
+    "REQ-01": {
+      "tool_calls": 9,
+      "model_turns": 6,
+      "tokens": {
+        "prompt": 23944,
+        "output": 1596,
+        "thoughts": 0,
+        "total": 25540
+      },
+      "wall_s": 32.72,
+      "session": 1
+    },
+    "REQ-02": {
+      "tool_calls": 9,
+      "model_turns": 6,
+      "tokens": {
+        "prompt": 22305,
+        "output": 489,
+        "thoughts": 0,
+        "total": 22794
+      },
+      "wall_s": 37.73,
+      "session": 1
+    },
+    "REQ-03": {
+      "tool_calls": 11,
+      "model_turns": 8,
+      "tokens": {
+        "prompt": 38592,
+        "output": 1316,
+        "thoughts": 0,
+        "total": 39908
+      },
+      "wall_s": 49.44,
+      "session": 1
+    },
+    "REQ-04": {
+      "tool_calls": 7,
+      "model_turns": 4,
+      "tokens": {
+        "prompt": 13133,
+        "output": 825,
+        "thoughts": 0,
+        "total": 13958
+      },
+      "wall_s": 21.17,
+      "session": 1
+    },
+    "REQ-05": {
+      "tool_calls": 9,
+      "model_turns": 5,
+      "tokens": {
+        "prompt": 17462,
+        "output": 620,
+        "thoughts": 0,
+        "total": 18082
+      },
+      "wall_s": 50.73,
+      "session": 1
+    },
+    "REQ-06": {
+      "tool_calls": 11,
+      "model_turns": 8,
+      "tokens": {
+        "prompt": 33514,
+        "output": 677,
+        "thoughts": 0,
+        "total": 34191
+      },
+      "wall_s": 48.5,
+      "session": 1
+    },
+    "REQ-07": {
+      "tool_calls": 12,
+      "model_turns": 9,
+      "tokens": {
+        "prompt": 44224,
+        "output": 769,
+        "thoughts": 0,
+        "total": 44993
+      },
+      "wall_s": 51.4,
+      "session": 1
+    },
+    "REQ-08": {
+      "tool_calls": 8,
+      "model_turns": 6,
+      "tokens": {
+        "prompt": 21218,
+        "output": 1031,
+        "thoughts": 0,
+        "total": 22249
+      },
+      "wall_s": 37.76,
+      "session": 1
+    },
+    "REQ-09": {
+      "tool_calls": 12,
+      "model_turns": 7,
+      "tokens": {
+        "prompt": 29214,
+        "output": 2260,
+        "thoughts": 0,
+        "total": 31474
+      },
+      "wall_s": 42.41,
+      "session": 1
+    },
+    "REQ-10": {
+      "tool_calls": 7,
+      "model_turns": 5,
+      "tokens": {
+        "prompt": 15972,
+        "output": 929,
+        "thoughts": 0,
+        "total": 16901
+      },
+      "wall_s": 29.74,
+      "session": 1
+    },
+    "REQ-11": {
+      "tool_calls": 13,
+      "model_turns": 8,
+      "tokens": {
+        "prompt": 35830,
+        "output": 1091,
+        "thoughts": 0,
+        "total": 36921
+      },
+      "wall_s": 48.19,
+      "session": 1
+    },
+    "REQ-12": {
+      "tool_calls": 15,
+      "model_turns": 13,
+      "tokens": {
+        "prompt": 64191,
+        "output": 1022,
+        "thoughts": 0,
+        "total": 65213
+      },
+      "wall_s": 83.87,
+      "session": 1
+    }
+  }
+}
