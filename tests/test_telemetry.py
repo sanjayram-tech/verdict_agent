@@ -62,6 +62,18 @@ def test_generation_tool_and_guardrail_spans(spans):
     assert "PASS is not allowed" in guard[0].attributes["langfuse.observation.status_message"]
 
 
+def test_token_usage_only_on_generation_spans(spans):
+    """Langfuse sums gen_ai.usage.* across a trace, so totals must not be repeated on parent spans."""
+    usage_types = {s.attributes.get("langfuse.observation.type") for s in spans
+                   if "gen_ai.usage.input_tokens" in s.attributes or "gen_ai.usage.output_tokens" in s.attributes}
+    assert usage_types == {"generation"}
+    gens = [s for s in spans if s.attributes.get("langfuse.observation.type") == "generation"]
+    root = next(s for s in spans if s.parent is None)
+    assert root.attributes["tyn.tokens.input"] == sum(g.attributes["gen_ai.usage.input_tokens"] for g in gens)
+    req08 = next(s for s in spans if s.name == "REQ-08")
+    assert req08.attributes["tyn.tokens.input"] > 0
+
+
 def test_session_on_every_span_and_no_content_by_default(spans):
     assert all(s.attributes.get("langfuse.session.id") == "R2.4-test" for s in spans)
     content_keys = {"gen_ai.tool.call.arguments", "gen_ai.tool.call.result", "langfuse.observation.input"}
@@ -76,6 +88,13 @@ def test_content_capture_is_opt_in_and_redacted(jira, labels):
     tool_spans = [s for s in spans if s.attributes.get("langfuse.observation.type") == "tool"]
     assert any("REC-9635" in s.attributes.get("gen_ai.tool.call.arguments", "") or
                "HND-77" in s.attributes.get("gen_ai.tool.call.result", "") for s in tool_spans)
+    # Langfuse shows Input/Output from langfuse.observation.*: set on tool and generation spans
+    assert all("langfuse.observation.input" in s.attributes and "langfuse.observation.output" in s.attributes
+               for s in tool_spans)
+    gens = [s for s in spans if s.attributes.get("langfuse.observation.type") == "generation"]
+    assert gens and all("langfuse.observation.input" in g.attributes for g in gens)
+    inputs = " ".join(g.attributes["langfuse.observation.input"] for g in gens)
+    assert '"user"' in inputs and '"tool_results"' in inputs  # first turn = user message, later = tool results
     # anything sent goes through the Tracer's redaction first
     exp = InMemorySpanExporter()
     t = Telemetry(exp, capture_content=True, batch=False)

@@ -165,6 +165,7 @@ class Telemetry:
             "tyn.tool_calls_requested": [c.get("name") for c in r.get("tool_calls") or []],
         }
         if self.capture:
+            attrs["langfuse.observation.input"] = r.get("input")  # what this call was sent (new messages)
             attrs["langfuse.observation.output"] = {"text": r.get("text"), "tool_calls": r.get("tool_calls")}
         span = self._child("llm call", r.get("req"), attrs, start_ns=now - int(r.get("latency_ms", 0)) * 1_000_000)
         span.end(end_time=now)
@@ -177,6 +178,9 @@ class Telemetry:
         if self.capture:
             attrs["gen_ai.tool.call.arguments"] = r.get("args")
             attrs["gen_ai.tool.call.result"] = r.get("result")
+            # Langfuse renders these as the observation's Input / Output panels
+            attrs["langfuse.observation.input"] = r.get("args")
+            attrs["langfuse.observation.output"] = r.get("result")
         span = self._child(r.get("tool") or "tool", r.get("req"), attrs,
                            start_ns=now - int(r.get("latency_ms", 0)) * 1_000_000)
         if r.get("error"):
@@ -217,8 +221,10 @@ class Telemetry:
         span.set_attributes(self._attrs({
             "tyn.decision": r.get("decision"), "tyn.agent_failure": r.get("agent_failure"),
             "tyn.tool_calls": r.get("tool_calls"), "tyn.evidence_count": len(r.get("evidence_refs") or []),
-            "gen_ai.usage.input_tokens": int(tokens.get("prompt", 0)),
-            "gen_ai.usage.output_tokens": int(tokens.get("output", 0)),
+            # Totals only as metadata: gen_ai.usage.* here would be summed again by Langfuse on top of
+            # the per-call generation spans, inflating trace tokens and cost.
+            "tyn.tokens.input": int(tokens.get("prompt", 0)),
+            "tyn.tokens.output": int(tokens.get("output", 0)),
             "langfuse.observation.output": r.get("decision"),
         }))
         if r.get("agent_failure"):
@@ -235,8 +241,8 @@ class Telemetry:
             "langfuse.observation.output": r.get("verdict") or r.get("status"),
             "tyn.wall_time_s": m.get("wall_time_s"), "tyn.model_calls": m.get("model_calls"),
             "tyn.tool_calls": m.get("tool_calls"), "tyn.tool_errors": m.get("tool_errors"),
-            "gen_ai.usage.input_tokens": int(tok.get("prompt", 0)),
-            "gen_ai.usage.output_tokens": int(tok.get("output", 0)),
+            "tyn.tokens.input": int(tok.get("prompt", 0)),  # metadata only; see _on_decision
+            "tyn.tokens.output": int(tok.get("output", 0)),
             "tyn.warnings": r.get("warnings"),
         }))
         if r.get("status") not in ("COMPLETE", "PARTIAL"):

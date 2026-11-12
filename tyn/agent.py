@@ -150,6 +150,27 @@ def summarize(result: dict[str, Any], limit: int = 1500) -> str:
     return s if len(s) <= limit else s[: limit - 12] + "…[trimmed]"
 
 
+class _RecordingChat:
+    """Wraps a Chat and remembers what was last sent, so each model turn can be traced with its input.
+
+    Only the new messages are kept (not the system prompt or full history), trimmed for size."""
+
+    def __init__(self, chat: Any):
+        self._chat = chat
+        self.last_input: dict[str, Any] | None = None
+
+    def send_user(self, text: str) -> Turn:
+        self.last_input = {"user": text if len(text) <= 2000 else text[:1988] + "…[trimmed]"}
+        return self._chat.send_user(text)
+
+    def send_tool_results(self, results: list[tuple[ToolCall, dict[str, Any]]], note: str | None = None) -> Turn:
+        sent: dict[str, Any] = {"tool_results": [{"tool": c.name, "result": summarize(r, 1000)} for c, r in results]}
+        if note:
+            sent["note"] = note
+        self.last_input = sent
+        return self._chat.send_tool_results(results, note)
+
+
 # --------------------------------------------------------------------------- results
 @dataclass
 class ReqResult:
@@ -218,7 +239,8 @@ class Agent:
     def _out_of_time(self) -> bool:
         return time.time() - self.t0 > self.b.max_wall_s
 
-    def _account(self, turn: Turn, phase: str, rr: ReqResult | None = None, step: int = 0) -> None:
+    def _account(self, turn: Turn, phase: str, rr: ReqResult | None = None, step: int = 0,
+                 sent: dict[str, Any] | None = None) -> None:
         self.model_calls += 1
         for k in self.tokens:
             self.tokens[k] += turn.usage.get(k, 0)
@@ -227,7 +249,7 @@ class Agent:
         self.tr.emit("model_turn", phase=phase, req=rr.id if rr else None, step=step, latency_ms=turn.latency_ms,
                      usage=turn.usage, finish_reason=turn.finish_reason,
                      tool_calls=[{"name": c.name, "args": c.args} for c in turn.calls],
-                     text=(turn.text or "")[:500])
+                     text=(turn.text or "")[:500], input=sent)
 
     def _run_tool(self, call: ToolCall, allowed: set[str], phase: str, req: str | None, step: int) -> dict[str, Any]:
         start = time.time()
@@ -260,12 +282,12 @@ class Agent:
 
     def discover(self) -> list[str]:
         """Model-driven discovery; falls back to direct tool calls if the model fails (reported)."""
-        chat = self.model.start_chat(DISCOVERY_PROMPT, {n: TOOL_SPECS[n] for n in DISCOVERY_TOOLS})
+        chat = _RecordingChat(self.model.start_chat(DISCOVERY_PROMPT, {n: TOOL_SPECS[n] for n in DISCOVERY_TOOLS}))
         try:
             turn = chat.send_user(f"Assess release {self.tb.release} for dataset scope '{self.tb.label}' in "
                                   f"Jira project {self.tb.project}. Identify the requirements to assess.")
             for step in range(1, self.b.max_discovery_turns + 1):
-                self._account(turn, "discovery", step=step)
+                self._account(turn, "discovery", step=step, sent=chat.last_input)
                 if not turn.calls:
                     turn = chat.send_user(NUDGE)
                     continue
@@ -300,7 +322,7 @@ class Agent:
         session = self.tb.start_session(req_id)
         self.tr.emit("requirement_start", req=req_id, key=req["key"], criterion=req["criterion"])
         system = INVESTIGATION_PROMPT.format(target=json.dumps(self.tb.target))
-        chat = self.model.start_chat(system, {n: TOOL_SPECS[n] for n in INVESTIGATION_TOOLS})
+        chat = _RecordingChat(self.model.start_chat(system, {n: TOOL_SPECS[n] for n in INVESTIGATION_TOOLS}))
         seen: dict[str, int] = {}
         nudges = 0
         final = False
@@ -315,7 +337,7 @@ class Agent:
                 f"Investigate it and record your decision.")
             while True:
                 rr.model_turns += 1
-                self._account(turn, "investigate", rr, rr.model_turns)
+                self._account(turn, "investigate", rr, rr.model_turns, sent=chat.last_input)
                 if rr.tokens["total"] > self.b.max_tokens_per_req:
                     failure = f"token budget exceeded ({rr.tokens['total']} > {self.b.max_tokens_per_req})"
                     break
