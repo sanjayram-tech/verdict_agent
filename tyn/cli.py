@@ -1,6 +1,6 @@
 """Run the release-readiness assessment.
 
-  python -m tyn.cli assess --project KAN --label tyn-release-assessment-v2 --release R2.4 [--out runs]
+  python -m tyn.cli assess [--project KAN] --label tyn-release-assessment-v2 --release R2.4 [--out runs]
   python -m tyn.cli assess --resume runs/<timestamp>      # continue an interrupted / quota-limited run
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .agent import Agent, Budgets, ReqResult, Tracer
 from .checkpoint import Checkpoint, CheckpointError
-from .config import ConfigError, JiraConfig, ModelConfig, secret_values
+from .config import ConfigError, JiraConfig, ModelConfig, default_project, secret_values
 from .jira_client import JiraReader
 from .model import PROVIDERS, build_model
 from .policy import Policy
@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m tyn.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("assess", help="assess release readiness from Jira evidence")
-    a.add_argument("--project", help="Jira project key (required unless --resume)")
+    a.add_argument("--project", help="Jira project key (default: JIRA_PROJECT; required unless --resume)")
     a.add_argument("--label", help="dataset scope label, e.g. tyn-release-assessment-v2 (required unless --resume)")
     a.add_argument("--release", help="target release, e.g. R2.4 (required unless --resume)")
     a.add_argument("--resume", default=None, metavar="RUN_DIR",
@@ -54,8 +54,10 @@ def main(argv: list[str] | None = None) -> int:
             project, label, release, only = (ckpt.data["project"], ckpt.data["label"], ckpt.data["release"],
                                              ckpt.data.get("only"))
         else:
+            args.project = args.project or default_project()
             missing = [f"--{n}" for n in ("project", "label", "release") if not getattr(args, n)]
             if missing:
+                missing = [("--project (or JIRA_PROJECT)" if m == "--project" else m) for m in missing]
                 raise CheckpointError(f"{', '.join(missing)} required (or use --resume RUN_DIR)")
             project, label, release = args.project, args.label, args.release
             only = [r.strip().upper() for r in args.requirements.split(",") if r.strip()] if args.requirements else None

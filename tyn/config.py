@@ -42,6 +42,12 @@ class JiraConfig:
         )
 
 
+def default_project() -> str | None:
+    """Jira project key from JIRA_PROJECT, used when --project is not given."""
+    load_dotenv()
+    return os.environ.get("JIRA_PROJECT", "").strip().upper() or None
+
+
 DEFAULT_MODELS = {"gemini": "gemini-2.5-flash", "anthropic": "claude-opus-5-5"}
 PROVIDER_KEY_VARS = {"gemini": "GEMINI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
                      "openrouter": "OPENROUTER_API_KEY", "groq": "GROQ_API_KEY", "deepseek": "DEEPSEEK_API_KEY",

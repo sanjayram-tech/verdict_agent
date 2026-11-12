@@ -1,8 +1,10 @@
 """Repeatable, idempotent importer: dataset.json -> Jira Cloud project.
 
 Usage:
-  python -m tyn.importer import --dataset inputs/dataset.json --project TYN [--dry-run]
-  python -m tyn.importer verify --dataset inputs/dataset.json --project TYN
+  python -m tyn.importer import --dataset inputs/dataset.json [--project TYN] [--dry-run]
+  python -m tyn.importer verify --dataset inputs/dataset.json [--project TYN]
+
+--project defaults to JIRA_PROJECT.
 
 Pass 1 creates one issue per record (bulk, 50 per call), pass 2 posts comments
 verbatim in recorded-time order, pass 3 creates "Relates" links. Every pass first
@@ -19,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .adf import adf_to_text, text_to_adf
-from .config import JiraConfig
+from .config import JiraConfig, default_project
 from .jira_client import JiraError, JiraReader, JiraWriter
 from .text import parse_comment, sort_key
 
@@ -348,11 +350,14 @@ def main(argv: list[str] | None = None) -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["import", "verify", "dedupe"])
     ap.add_argument("--dataset", required=True)
-    ap.add_argument("--project", required=True, help="Jira project key, e.g. TYN")
+    ap.add_argument("--project", default=None, help="Jira project key, e.g. TYN (default: JIRA_PROJECT)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--apply", action="store_true", help="dedupe: actually delete the listed duplicates")
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args(argv)
+    args.project = args.project or default_project()
+    if not args.project:
+        ap.error("--project is required (or set JIRA_PROJECT)")
     data = load_dataset(args.dataset)
     try:
         if args.command == "import":

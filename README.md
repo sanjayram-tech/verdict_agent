@@ -32,6 +32,8 @@ cp .env.example .env              # then fill in the values (never commit .env)
 
 ## 3. Import the dataset into Jira
 
+`--project` can be left out of every command below if `JIRA_PROJECT` is set in `.env`; an explicit `--project` wins.
+
 ```bash
 python -m tyn.importer import --dataset inputs/dataset.json --project TYN --dry-run
 python -m tyn.importer import --dataset inputs/dataset.json --project TYN
