@@ -95,8 +95,10 @@ class Toolbox:
             return fn(**(args or {}))
         except ToolError as exc:
             return {"error": str(exc)}
-        except TypeError as exc:
-            return {"error": f"Bad arguments for {name}: {exc}"}
+        except (TypeError, AttributeError) as exc:
+            # Unknown keywords, or a value of the wrong type (e.g. an object where a string was expected).
+            return {"error": f"Bad arguments for {name}: {exc}. Pass each argument as a plain value of the type "
+                             f"in the tool schema."}
         except JiraError as exc:
             return {"error": f"Jira request failed ({exc.status}): {exc.message}", "jira_error": True}
 

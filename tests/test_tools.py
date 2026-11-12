@@ -105,6 +105,13 @@ def test_check_scope_requires_fetched_comment(tb):
     assert res["missing_required"] == ["prompt"]  # criterion mentions the prompt -> required by policy
 
 
+def test_wrong_typed_argument_is_a_tool_error_not_a_crash(tb):
+    """A model passing an object where a string is expected gets an error result it can correct."""
+    tb.start_session("REQ-03")
+    res = tb.call("check_scope", {"comment_ref": {"type": "string", "value": "TYN-1#c1"}}, INVESTIGATION_TOOLS)
+    assert res["error"].startswith("Bad arguments for check_scope")
+
+
 # ------------------------------------------------------------------ structural guardrails
 def test_honest_correct_decision_accepted(tb, labels):
     tb.start_session("REQ-08")
